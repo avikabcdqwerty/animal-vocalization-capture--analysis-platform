@@ -1,0 +1,247 @@
+# Directory: backend/tests
+# This directory contains unit and integration tests for the backend API and ML components.
+# Each test module is self-contained and uses pytest best practices.
+
+# --- tests/conftest.py ---
+import os
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.main import app
+from app.models import Base, get_user_by_id
+from app.auth import create_access_token
+
+# Use a test database (SQLite in-memory for speed)
+TEST_DATABASE_URL = "sqlite:///./test.db"
+
+engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_database():
+    # Create tables
+    Base.metadata.create_all(bind=engine)
+    yield
+    # Drop tables after tests
+    Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture
+def db_session():
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+@pytest.fixture
+def client(monkeypatch, db_session):
+    # Patch DB dependency to use test session
+    def override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+    app.dependency_overrides = {}
+    for route in app.routes:
+        if hasattr(route, "dependant"):
+            for dep in route.dependant.dependencies:
+                if getattr(dep.call, "__name__", "") == "get_db":
+                    dep.call = override_get_db
+    client = TestClient(app)
+    yield client
+
+@pytest.fixture
+def test_user(db_session):
+    from app.models import User
+    user = User(
+        email="testuser@example.com",
+        hashed_password="fakehashedpassword",
+        is_active=True,
+        roles=["researcher"],
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
+
+@pytest.fixture
+def auth_header(test_user):
+    token = create_access_token({"user_id": test_user.id, "roles": test_user.roles})
+    return {"Authorization": f"Bearer {token}"}
+
+# --- tests/test_auth.py ---
+def test_auth_token_generation_and_validation(test_user):
+    from app.auth import create_access_token, decode_access_token
+    token = create_access_token({"user_id": test_user.id, "roles": test_user.roles})
+    data = decode_access_token(token)
+    assert data.user_id == test_user.id
+    assert "researcher" in data.roles
+
+# --- tests/test_audio_upload.py ---
+import io
+
+def test_upload_audio_file_success(client, auth_header, db_session):
+    # Simulate a valid audio file upload
+    audio_content = b"RIFF....WAVEfmt "  # Minimal WAV header
+    data = {
+        "species": "canis_lupus",
+        "location": "Test Forest",
+        "timestamp": "2023-01-01T12:00:00Z",
+    }
+    files = {
+        "file": ("test.wav", io.BytesIO(audio_content), "audio/wav"),
+    }
+    response = client.post("/api/audio/upload", data=data, files=files, headers=auth_header)
+    assert response.status_code == 200
+    resp_json = response.json()
+    assert resp_json["audio_file"]["species"] == "canis_lupus"
+    assert resp_json["audio_file"]["original_filename"] == "test.wav"
+
+def test_upload_audio_file_unsupported_species(client, auth_header):
+    audio_content = b"RIFF....WAVEfmt "
+    data = {
+        "species": "unsupported_species",
+        "location": "Test Forest",
+        "timestamp": "2023-01-01T12:00:00Z",
+    }
+    files = {
+        "file": ("test.wav", io.BytesIO(audio_content), "audio/wav"),
+    }
+    response = client.post("/api/audio/upload", data=data, files=files, headers=auth_header)
+    assert response.status_code == 400
+    assert "not supported" in response.json()["detail"]
+
+def test_upload_audio_file_too_large(client, auth_header):
+    audio_content = b"x" * (51 * 1024 * 1024)  # 51MB
+    data = {
+        "species": "canis_lupus",
+        "location": "Test Forest",
+        "timestamp": "2023-01-01T12:00:00Z",
+    }
+    files = {
+        "file": ("large.wav", io.BytesIO(audio_content), "audio/wav"),
+    }
+    response = client.post("/api/audio/upload", data=data, files=files, headers=auth_header)
+    assert response.status_code == 413
+
+# --- tests/test_species.py ---
+def test_list_supported_species(client, auth_header):
+    response = client.get("/api/species/", headers=auth_header)
+    assert response.status_code == 200
+    data = response.json()
+    assert "supported_species" in data
+    assert "canis_lupus" in data["supported_species"]
+
+# --- tests/test_analysis.py ---
+def test_trigger_analysis_for_audio_file(client, auth_header, db_session, test_user):
+    from app.models import AudioFile
+    # Create a dummy audio file record
+    audio_file = AudioFile(
+        uploader_id=test_user.id,
+        species="canis_lupus",
+        location="Test Forest",
+        timestamp="2023-01-01T12:00:00Z",
+        s3_object_key="audio/canis_lupus/test.wav",
+        original_filename="test.wav",
+        file_format="wav",
+        file_size=100,
+        is_encrypted=True,
+    )
+    db_session.add(audio_file)
+    db_session.commit()
+    db_session.refresh(audio_file)
+
+    response = client.post(f"/api/analysis/trigger/{audio_file.id}", headers=auth_header)
+    assert response.status_code == 200
+    data = response.json()
+    assert "message" in data
+
+def test_get_analysis_result_no_result(client, auth_header, db_session, test_user):
+    from app.models import AudioFile
+    audio_file = AudioFile(
+        uploader_id=test_user.id,
+        species="canis_lupus",
+        location="Test Forest",
+        timestamp="2023-01-01T12:00:00Z",
+        s3_object_key="audio/canis_lupus/test.wav",
+        original_filename="test.wav",
+        file_format="wav",
+        file_size=100,
+        is_encrypted=True,
+    )
+    db_session.add(audio_file)
+    db_session.commit()
+    db_session.refresh(audio_file)
+
+    response = client.get(f"/api/analysis/result/{audio_file.id}", headers=auth_header)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["analysis_result"] is None
+
+# --- tests/test_storage.py ---
+def test_supported_audio_formats():
+    from app.storage import get_supported_audio_formats
+    formats = get_supported_audio_formats()
+    assert "wav" in formats
+    assert "mp3" in formats
+    assert "flac" in formats
+
+def test_encrypt_decrypt_bytes():
+    from app.storage import encrypt_bytes, decrypt_bytes
+    data = b"test audio data"
+    encrypted = encrypt_bytes(data)
+    decrypted = decrypt_bytes(encrypted)
+    assert decrypted == data
+
+# --- tests/test_models.py ---
+def test_user_model_repr(test_user):
+    assert "testuser@example.com" in repr(test_user)
+
+def test_audio_file_model_repr(db_session, test_user):
+    from app.models import AudioFile
+    audio_file = AudioFile(
+        uploader_id=test_user.id,
+        species="canis_lupus",
+        location="Test Forest",
+        timestamp="2023-01-01T12:00:00Z",
+        s3_object_key="audio/canis_lupus/test.wav",
+        original_filename="test.wav",
+        file_format="wav",
+        file_size=100,
+        is_encrypted=True,
+    )
+    db_session.add(audio_file)
+    db_session.commit()
+    db_session.refresh(audio_file)
+    assert "canis_lupus" in repr(audio_file)
+
+def test_analysis_result_model_repr(db_session, test_user):
+    from app.models import AudioFile, AnalysisResult
+    audio_file = AudioFile(
+        uploader_id=test_user.id,
+        species="canis_lupus",
+        location="Test Forest",
+        timestamp="2023-01-01T12:00:00Z",
+        s3_object_key="audio/canis_lupus/test.wav",
+        original_filename="test.wav",
+        file_format="wav",
+        file_size=100,
+        is_encrypted=True,
+    )
+    db_session.add(audio_file)
+    db_session.commit()
+    db_session.refresh(audio_file)
+    analysis_result = AnalysisResult(
+        audio_file_id=audio_file.id,
+        translation="Howl",
+        behavioral_tags=["mating_call"],
+        accuracy=0.9,
+        quality_issues={"noise": False, "overlap": False},
+        partial=False,
+    )
+    db_session.add(analysis_result)
+    db_session.commit()
+    db_session.refresh(analysis_result)
+    assert "accuracy=0.9" in repr(analysis_result)

@@ -1,0 +1,152 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pyo
+*.pyd
+*.env
+.env.*
+*.envrc
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+*.db
+*.sqlite3
+*.log
+*.pot
+*.mo
+
+# FastAPI
+instance/
+*.db
+*.sqlite3
+
+# ML models
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pb
+*.joblib
+*.pkl
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Redis
+dump.rdb
+
+# PostgreSQL
+*.sql
+*.psql
+
+# Docker
+**/.docker/
+**/docker-compose.override.yml
+
+# Kubernetes
+*.yaml
+*.yml
+*.log
+
+# S3/MinIO (local test files)
+*.minio
+*.s3
+*.bucket
+*.tmp
+*.bak
+
+# React (TypeScript)
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+frontend/.cache/
+frontend/.eslintcache
+frontend/.parcel-cache/
+frontend/.turbo/
+frontend/.next/
+frontend/.vercel/
+frontend/.DS_Store
+
+# TypeScript
+frontend/*.tsbuildinfo
+
+# Jest
+frontend/coverage/
+frontend/jest-test-results.json
+
+# ESLint
+frontend/.eslintcache
+
+# Black
+**/.black/
+
+# General
+*.swp
+*.swo
+*.bak
+*.tmp
+*.DS_Store
+*.idea/
+*.vscode/
+*.project
+*.settings/
+*.history/
+*.log
+
+# Test/coverage reports
+htmlcov/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# GitHub Actions
+.github/workflows/*.log
+
+# Ignore local secrets
+secrets.*
+secret.*
+*.pem
+*.key
+*.crt
+
+# Ignore audio files (if stored locally for dev)
+audio/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+
+# Ignore backend test artifacts
+backend/tests/__pycache__/
+backend/tests/.pytest_cache/
+backend/tests/.coverage
+backend/tests/htmlcov/
+
+# Ignore frontend test artifacts
+frontend/coverage/
+frontend/.coverage
+frontend/.nyc_output/
+frontend/junit.xml
+
+# Ignore miscellaneous
+*.orig
+*.rej
+*.out

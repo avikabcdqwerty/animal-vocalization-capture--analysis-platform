@@ -1,0 +1,582 @@
+// Directory: frontend
+// This is the root of the React (TypeScript) application for the Animal Vocalization Capture & Analysis Platform.
+// The following files are included for a production-ready, modular, secure, and maintainable frontend.
+
+// --- src/index.tsx ---
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import { AuthProvider } from './auth/AuthProvider';
+import { BrowserRouter } from 'react-router-dom';
+import './index.css';
+
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <AuthProvider>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </AuthProvider>
+  </React.StrictMode>
+);
+
+// --- src/App.tsx ---
+import React from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import LoginPage from './auth/LoginPage';
+import Dashboard from './dashboard/Dashboard';
+import UploadPage from './upload/UploadPage';
+import AnalysisPage from './analysis/AnalysisPage';
+import { useAuth } from './auth/useAuth';
+
+const App: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/"
+        element={isAuthenticated ? <Dashboard /> : <Navigate to="/login" />}
+      />
+      <Route
+        path="/upload"
+        element={isAuthenticated ? <UploadPage /> : <Navigate to="/login" />}
+      />
+      <Route
+        path="/analysis/:audioFileId"
+        element={isAuthenticated ? <AnalysisPage /> : <Navigate to="/login" />}
+      />
+      <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} />} />
+    </Routes>
+  );
+};
+
+export default App;
+
+// --- src/auth/AuthProvider.tsx ---
+import React, { createContext, useState, useEffect, ReactNode } from 'react';
+import { getToken, setToken, removeToken } from './tokenUtils';
+
+interface AuthContextType {
+  isAuthenticated: boolean;
+  token: string | null;
+  login: (token: string) => void;
+  logout: () => void;
+}
+
+export const AuthContext = createContext<AuthContextType>({
+  isAuthenticated: false,
+  token: null,
+  login: () => {},
+  logout: () => {},
+});
+
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [token, setTokenState] = useState<string | null>(getToken());
+
+  useEffect(() => {
+    setTokenState(getToken());
+  }, []);
+
+  const login = (newToken: string) => {
+    setToken(newToken);
+    setTokenState(newToken);
+  };
+
+  const logout = () => {
+    removeToken();
+    setTokenState(null);
+  };
+
+  return (
+    <AuthContext.Provider value={{ isAuthenticated: !!token, token, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+// --- src/auth/useAuth.ts ---
+import { useContext } from 'react';
+import { AuthContext } from './AuthProvider';
+
+export const useAuth = () => useContext(AuthContext);
+
+// --- src/auth/tokenUtils.ts ---
+export const TOKEN_KEY = 'jwt_token';
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function removeToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+// --- src/auth/LoginPage.tsx ---
+import React, { useState } from 'react';
+import { useAuth } from './useAuth';
+import { useNavigate } from 'react-router-dom';
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+const LoginPage: React.FC = () => {
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ username: email, password }),
+      });
+      if (!res.ok) {
+        throw new Error('Invalid credentials');
+      }
+      const data = await res.json();
+      login(data.access_token);
+      navigate('/');
+    } catch (err: any) {
+      setError(err.message || 'Login failed');
+    }
+  };
+
+  return (
+    <div className="login-page">
+      <h2>Researcher Login</h2>
+      <form onSubmit={handleSubmit}>
+        <input
+          type="email"
+          placeholder="Email"
+          required
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          required
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+        />
+        <button type="submit">Log In</button>
+        {error && <div className="error">{error}</div>}
+      </form>
+    </div>
+  );
+};
+
+export default LoginPage;
+
+// --- src/dashboard/Dashboard.tsx ---
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '../auth/useAuth';
+import { useNavigate } from 'react-router-dom';
+
+interface AudioFile {
+  id: number;
+  species: string;
+  location?: string;
+  timestamp: string;
+  original_filename: string;
+  file_format: string;
+  file_size: number;
+  quality_flag?: string;
+  created_at: string;
+}
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+const Dashboard: React.FC = () => {
+  const { token, logout } = useAuth();
+  const navigate = useNavigate();
+  const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchAudioFiles() {
+      try {
+        const res = await fetch(`${API_URL}/api/audio/list`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Failed to fetch audio files');
+        const data = await res.json();
+        setAudioFiles(data.audio_files || []);
+      } catch (err: any) {
+        setError(err.message || 'Error loading dashboard');
+      }
+    }
+    fetchAudioFiles();
+  }, [token]);
+
+  return (
+    <div className="dashboard">
+      <header>
+        <h2>My Animal Vocalizations</h2>
+        <button onClick={() => navigate('/upload')}>Upload New</button>
+        <button onClick={logout}>Logout</button>
+      </header>
+      {error && <div className="error">{error}</div>}
+      <table>
+        <thead>
+          <tr>
+            <th>Species</th>
+            <th>Location</th>
+            <th>Timestamp</th>
+            <th>Filename</th>
+            <th>Format</th>
+            <th>Size</th>
+            <th>Quality</th>
+            <th>Analysis</th>
+          </tr>
+        </thead>
+        <tbody>
+          {audioFiles.map(file => (
+            <tr key={file.id}>
+              <td>{file.species}</td>
+              <td>{file.location || '-'}</td>
+              <td>{new Date(file.timestamp).toLocaleString()}</td>
+              <td>{file.original_filename}</td>
+              <td>{file.file_format.toUpperCase()}</td>
+              <td>{(file.file_size / 1024 / 1024).toFixed(2)} MB</td>
+              <td>{file.quality_flag || 'ok'}</td>
+              <td>
+                <button onClick={() => navigate(`/analysis/${file.id}`)}>
+                  View Analysis
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default Dashboard;
+
+// --- src/upload/UploadPage.tsx ---
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../auth/useAuth';
+import { useNavigate } from 'react-router-dom';
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+const UploadPage: React.FC = () => {
+  const { token } = useAuth();
+  const navigate = useNavigate();
+  const [speciesList, setSpeciesList] = useState<string[]>([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [species, setSpecies] = useState('');
+  const [location, setLocation] = useState('');
+  const [timestamp, setTimestamp] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchSpecies() {
+      try {
+        const res = await fetch(`${API_URL}/api/species/`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Failed to fetch species');
+        const data = await res.json();
+        setSpeciesList(data.supported_species || []);
+      } catch (err: any) {
+        setError(err.message || 'Error loading species');
+      }
+    }
+    fetchSpecies();
+  }, [token]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    if (!file) {
+      setError('Please select a file');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('species', species);
+    if (location) formData.append('location', location);
+    if (timestamp) formData.append('timestamp', timestamp);
+
+    try {
+      const res = await fetch(`${API_URL}/api/audio/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || 'Upload failed');
+      }
+      setSuccess('Upload successful!');
+      setTimeout(() => navigate('/'), 1500);
+    } catch (err: any) {
+      setError(err.message || 'Upload failed');
+    }
+  };
+
+  return (
+    <div className="upload-page">
+      <h2>Upload Animal Vocalization</h2>
+      <form onSubmit={handleSubmit}>
+        <label>
+          Species:
+          <select
+            required
+            value={species}
+            onChange={e => setSpecies(e.target.value)}
+          >
+            <option value="">Select species</option>
+            {speciesList.map(sp => (
+              <option key={sp} value={sp}>{sp}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Location:
+          <input
+            type="text"
+            value={location}
+            onChange={e => setLocation(e.target.value)}
+            placeholder="Location (optional)"
+          />
+        </label>
+        <label>
+          Timestamp:
+          <input
+            type="datetime-local"
+            value={timestamp}
+            onChange={e => setTimestamp(e.target.value)}
+            placeholder="Timestamp (optional)"
+          />
+        </label>
+        <label>
+          Audio File:
+          <input
+            type="file"
+            accept=".wav,.mp3,.flac"
+            required
+            onChange={e => setFile(e.target.files?.[0] || null)}
+          />
+        </label>
+        <button type="submit">Upload</button>
+        {error && <div className="error">{error}</div>}
+        {success && <div className="success">{success}</div>}
+      </form>
+    </div>
+  );
+};
+
+export default UploadPage;
+
+// --- src/analysis/AnalysisPage.tsx ---
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '../auth/useAuth';
+import { useParams, useNavigate } from 'react-router-dom';
+
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+interface AnalysisResult {
+  translation?: string;
+  behavioral_tags?: string[];
+  accuracy?: number;
+  quality_issues?: { [key: string]: boolean };
+  partial?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+const AnalysisPage: React.FC = () => {
+  const { token } = useAuth();
+  const { audioFileId } = useParams<{ audioFileId: string }>();
+  const navigate = useNavigate();
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchAnalysis() {
+      setLoading(true);
+      try {
+        const res = await fetch(`${API_URL}/api/analysis/result/${audioFileId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        setResult(data.analysis_result || null);
+        setMessage(data.message || null);
+      } catch (err: any) {
+        setMessage('Failed to load analysis');
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchAnalysis();
+  }, [audioFileId, token]);
+
+  const handleTriggerAnalysis = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/analysis/trigger/${audioFileId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setMessage(data.message || null);
+      setResult(data.analysis_result || null);
+    } catch (err: any) {
+      setMessage('Failed to trigger analysis');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="analysis-page">
+      <button onClick={() => navigate('/')}>Back to Dashboard</button>
+      <h2>Analysis Result</h2>
+      {loading && <div>Loading...</div>}
+      {!loading && !result && (
+        <div>
+          <div>{message || 'No analysis result yet.'}</div>
+          <button onClick={handleTriggerAnalysis}>Trigger Analysis</button>
+        </div>
+      )}
+      {!loading && result && (
+        <div className="analysis-result">
+          <div>
+            <strong>Translation:</strong> {result.translation || 'N/A'}
+          </div>
+          <div>
+            <strong>Behavioral Tags:</strong>{' '}
+            {result.behavioral_tags?.join(', ') || 'N/A'}
+          </div>
+          <div>
+            <strong>Accuracy:</strong>{' '}
+            {result.accuracy !== undefined ? `${(result.accuracy * 100).toFixed(1)}%` : 'N/A'}
+          </div>
+          <div>
+            <strong>Quality Issues:</strong>{' '}
+            {result.quality_issues
+              ? Object.entries(result.quality_issues)
+                  .filter(([_, v]) => v)
+                  .map(([k]) => k)
+                  .join(', ') || 'None'
+              : 'None'}
+          </div>
+          <div>
+            <strong>Partial Result:</strong> {result.partial ? 'Yes' : 'No'}
+          </div>
+          <div>
+            <strong>Created At:</strong>{' '}
+            {result.created_at ? new Date(result.created_at).toLocaleString() : 'N/A'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AnalysisPage;
+
+// --- src/index.css ---
+body {
+  font-family: Arial, sans-serif;
+  background: #f6f8fa;
+  margin: 0;
+  padding: 0;
+}
+.login-page, .dashboard, .upload-page, .analysis-page {
+  max-width: 700px;
+  margin: 2rem auto;
+  background: #fff;
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+}
+h2 {
+  margin-top: 0;
+}
+form label {
+  display: block;
+  margin: 1rem 0 0.5rem;
+}
+input, select, button {
+  margin-bottom: 1rem;
+  padding: 0.5rem;
+  font-size: 1rem;
+}
+button {
+  cursor: pointer;
+}
+.error {
+  color: #d32f2f;
+  margin-top: 1rem;
+}
+.success {
+  color: #388e3c;
+  margin-top: 1rem;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 0.5rem;
+}
+th {
+  background: #f0f0f0;
+}
+.analysis-result > div {
+  margin-bottom: 0.5rem;
+}
+
+// --- src/react-app-env.d.ts ---
+// (for TypeScript type support)
+/// <reference types="react-scripts" />
+
+// --- package.json ---
+{
+  "name": "animal-vocalization-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.1",
+    "typescript": "^5.2.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.21",
+    "@types/react-dom": "^18.2.7",
+    "@types/react-router-dom": "^5.3.3"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  }
+}
+
+// --- .env.example ---
+REACT_APP_API_URL=http://localhost:8000
+
+// --- Exported: All files in this directory are part of the frontend React app ---
